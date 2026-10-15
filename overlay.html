@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advanced Reactive Avatar Overlay (WebSocket)</title>
+  
+  <style>
+    :root {
+      --bg-color: transparent; 
+      --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-color);
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: var(--font-family);
+    }
+
+    #avatar-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    img#avatar {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    #debug-ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 14px;
+      z-index: 9999;
+      display: none;
+    }
+
+    #vol-bar-container {
+      width: 150px;
+      height: 10px;
+      background: #333;
+      margin-top: 8px;
+      border-radius: 2px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #vol-bar {
+      width: 0%;
+      height: 100%;
+      background: lime;
+      transition: width 0.05s ease;
+    }
+    
+    #thresh-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: red;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="debug-ui">
+    <div>Bridge: <span id="debug-ws" style="color: #e67e22;">Connecting...</span></div>
+    <div>State: <span id="debug-state" style="color: #f1c40f;">resting</span></div>
+    <div>Vol: <span id="debug-vol">0</span> / Thresh: <span id="debug-thresh">35</span></div>
+    <div id="vol-bar-container">
+      <div id="thresh-line"></div>
+      <div id="vol-bar"></div>
+    </div>
+  </div>
+
+  <div id="avatar-container">
+    <img id="avatar" src="" alt="Reactive Avatar">
+  </div>
+
+  <script>
+    const CONFIG = {
+      // Set to false to use your actual GIF files
+      usePlaceholders: false, 
+      
+      // Set to false once your threshold is tuned to hide the debug box on stream
+      showDebugMenu: true, 
+
+      // Local Python WebSocket URL
+      wsUrl: 'ws://127.0.0.1:8765',
+
+      files: {
+        resting:  'resting.gif',
+        talking:  'talking.gif',
+        stretch:  'stretch.gif',
+        pushup:   'pushup.gif',
+        walking:  'walking.gif',
+        fighting: 'fighting.gif',
+        coin:     'coin.gif'
+      },
+
+      placeholders: {
+        resting:  'https://placehold.co/600x600/2ecc71/ffffff?text=Resting+(Quiet)',
+        talking:  'https://placehold.co/600x600/e74c3c/ffffff?text=Talking!!!',
+        stretch:  'https://placehold.co/600x600/f1c40f/ffffff?text=Stretching...',
+        pushup:   'https://placehold.co/600x600/3498db/ffffff?text=Doing+Pushups...',
+        walking:  'https://placehold.co/600x600/9b59b6/ffffff?text=Walking...',
+        fighting: 'https://placehold.co/600x600/e67e22/ffffff?text=Fighting!',
+        coin:     'https://placehold.co/600x600/f39c12/ffffff?text=Flipping+Coin'
+      },
+
+      volumeThreshold: 35, 
+      holdTimeMs: 50,     
+      idleCycleTimeMs: 10000 
+    };
+
+    const ASSETS = CONFIG.usePlaceholders ? CONFIG.placeholders : CONFIG.files;
+    const preloadedImages = {}; 
+
+    if (CONFIG.showDebugMenu) {
+      document.getElementById('debug-ui').style.display = 'block';
+      document.getElementById('debug-thresh').innerText = CONFIG.volumeThreshold;
+      const threshPercent = Math.min((CONFIG.volumeThreshold / 100) * 100, 100);
+      document.getElementById('thresh-line').style.left = threshPercent + '%';
+    }
+
+    function preloadAssets() {
+      for (const [key, src] of Object.entries(ASSETS)) {
+        const img = new Image();
+        img.src = src;
+        preloadedImages[key] = img;
+      }
+    }
+
+    class AvatarBrain {
+      constructor(imgElement) {
+        this.imgElement = imgElement;
+        this.currentState = null;
+        this.idleCycleTimer = null;
+        this.talkHoldTimer = null;
+        this.idleSequence = ['resting', 'stretch', 'pushup', 'walking', 'fighting', 'coin'];
+      }
+
+      setState(newState) {
+        if (this.currentState === newState) return;
+        this.currentState = newState;
+        this.imgElement.src = ASSETS[newState];
+
+        if (CONFIG.showDebugMenu) {
+          document.getElementById('debug-state').innerText = newState;
+          document.getElementById('debug-state').style.color = (newState === 'talking') ? '#e74c3c' : '#f1c40f';
+        }
+      }
+
+      getRandomIdleState() {
+        let nextState = this.idleSequence[Math.floor(Math.random() * this.idleSequence.length)];
+        while (nextState === this.currentState && this.idleSequence.length > 1) {
+          nextState = this.idleSequence[Math.floor(Math.random() * this.idleSequence.length)];
+        }
+        return nextState;
+      }
+
+      startIdleCycle() {
+        this.stopIdleCycle(); 
+        this.setState(this.getRandomIdleState());
+        this.idleCycleTimer = setInterval(() => {
+          this.setState(this.getRandomIdleState());
+        }, CONFIG.idleCycleTimeMs);
+      }
+
+      stopIdleCycle() {
+        if (this.idleCycleTimer) {
+          clearInterval(this.idleCycleTimer);
+          this.idleCycleTimer = null;
+        }
+      }
+
+      processAudioFrame(volume) {
+        const isLoud = volume > CONFIG.volumeThreshold;
+
+        if (CONFIG.showDebugMenu) {
+          document.getElementById('debug-vol').innerText = Math.round(volume);
+          const volPercent = Math.min((volume / 100) * 100, 100);
+          const bar = document.getElementById('vol-bar');
+          bar.style.width = volPercent + '%';
+          bar.style.background = isLoud ? 'red' : 'lime';
+        }
+
+        if (isLoud) {
+          if (this.talkHoldTimer) {
+            clearTimeout(this.talkHoldTimer);
+            this.talkHoldTimer = null;
+          }
+          if (this.currentState !== 'talking') {
+            this.stopIdleCycle(); 
+            this.setState('talking');
+          }
+        } else {
+          if (this.currentState === 'talking' && !this.talkHoldTimer) {
+            this.talkHoldTimer = setTimeout(() => {
+              this.startIdleCycle(); 
+              this.talkHoldTimer = null;
+            }, CONFIG.holdTimeMs);
+          }
+        }
+      }
+    }
+
+    class WebSocketAudioEngine {
+      constructor(url, onVolumeUpdate) {
+        this.url = url;
+        this.onVolumeUpdate = onVolumeUpdate;
+        this.ws = null;
+        this.statusEl = document.getElementById('debug-ws');
+      }
+
+      setStatus(text, color) {
+        if (CONFIG.showDebugMenu && this.statusEl) {
+          this.statusEl.innerText = text;
+          this.statusEl.style.color = color;
+        }
+      }
+
+      connect() {
+        this.setStatus('Connecting...', '#e67e22');
+        this.ws = new WebSocket(this.url);
+
+        this.ws.onopen = () => {
+          this.setStatus('Connected', '#2ecc71');
+        };
+
+        this.ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (typeof data.volume === 'number') {
+              this.onVolumeUpdate(data.volume);
+            }
+          } catch (e) {
+            console.error('Invalid WS message:', e);
+          }
+        };
+
+        this.ws.onclose = () => {
+          this.setStatus('Reconnecting...', '#e74c3c');
+          this.onVolumeUpdate(0);
+          setTimeout(() => this.connect(), 2000);
+        };
+
+        this.ws.onerror = () => {
+          this.ws.close();
+        };
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      preloadAssets();
+
+      const avatarImg = document.getElementById('avatar');
+      const avatarController = new AvatarBrain(avatarImg);
+      const audioBridge = new WebSocketAudioEngine(CONFIG.wsUrl, (volume) => {
+        avatarController.processAudioFrame(volume);
+      });
+
+      avatarController.startIdleCycle();
+      audioBridge.connect();
+    });
+  </script>
+</body>
+</html>
